@@ -2,7 +2,13 @@
 
 An ultralight starter kit for agentically built apps. One window, no build step, plain ES modules with Preact. Point an agent at it. Tell it what to build.
 
+[General Browser](https://generalsentiment.co/browser/) is built with it.
+
 **macOS only for now.**
+
+## Stack
+
+Electron shell. Preact + htm (no JSX). Plain JavaScript, native ES modules. No build step.
 
 ## Philosophy
 
