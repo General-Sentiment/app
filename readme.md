@@ -49,19 +49,34 @@ Open the folder in an AI coding agent. The `AGENTS.md` files explain the rest.
 
 ## Plugin architecture
 
-A scoped CRUD API lives at `window.app.data.*`. Read and write anywhere inside `~/.general-app/`. Use it for notes, bookmarks, saved images, annotations — anything you want to persist.
+Two CRUD namespaces. Same surface. Different scope.
+
+- `window.app.data.*` — scoped to `~/.general-app/`. Relative paths only. Use for app-managed state: notes, bookmarks, saved images, annotations.
+- `window.app.fs.*` — unscoped. Absolute paths or `~/…`. Use when a feature needs files outside the data dir: an Obsidian vault, Desktop, an external project.
 
 ```js
+// App state
 await window.app.data.writeJSON("notes.json", [{ body, created }]);
 const { ok, data } = await window.app.data.readJSON("notes.json");
 
 const res = await fetch(imageUrl);
 await window.app.data.writeBlob("images/foo.png", await res.blob());
+
+// Anywhere on disk
+await window.app.fs.writeMarkdown("~/Notes/2026-04-19.md", {
+  frontmatter: { title: "Today", tags: ["log"] },
+  body: "# Today\n\nNotes…\n",
+});
+const { data: doc } = await window.app.fs.readMarkdown("~/Notes/2026-04-19.md");
 ```
 
 No privileged internal path. Settings, window state, UI manifest, update flow all run on the same primitives. An agent-built feature gets the same access core code has. The API is the plugin architecture. You build on the surface the app is built on.
 
-Path traversal and absolute paths are rejected. Every call returns `{ ok, data?, error? }`. Full surface: `read`, `write`, `readJSON`, `writeJSON`, `readBytes`, `writeBytes`, `readBlob`, `writeBlob`, `delete`, `exists`, `list`.
+Every call returns `{ ok, data?, error? }`. `data.*` rejects absolute paths and `..`. `fs.*` rejects relative paths. Full surface on both: `read`, `write`, `readJSON`, `writeJSON`, `readBytes`, `writeBytes`, `readBlob`, `writeBlob`, `readMarkdown`, `writeMarkdown`, `delete`, `exists`, `list`.
+
+### Markdown with frontmatter
+
+`readMarkdown` parses a leading `---`-fenced YAML block and returns `{ frontmatter, body }`. Files with no fence read as `{ frontmatter: {}, body: <file> }`. `writeMarkdown({ frontmatter, body })` emits the fence only when `frontmatter` has keys. Round-trips through `js-yaml` — the YAML block is rewritten, so comments inside it are not preserved.
 
 ## Customizing the UI
 

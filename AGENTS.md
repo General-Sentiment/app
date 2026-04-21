@@ -24,9 +24,12 @@ When a new version ships UI changes, the app diffs the bundled files against a m
 
 ## Data API (plugin surface)
 
-The UI has a scoped CRUD API at `window.app.data.*`. It is exposed via [preload.js](preload.js) and implemented by the `data-*` IPC handlers in [main.js](main.js). This is the single read/write surface for `~/.general-app/`.
+Two CRUD namespaces exposed via [preload.js](preload.js) and implemented in [main.js](main.js):
 
-Core features (settings, window state, UI manifest, update flow) run on the same primitives. There is no privileged internal path. A feature added by a user's agent has the same access as a feature shipped in the app. When adding persistence, use this API. Skip `localStorage` and embedded DBs.
+- `window.app.data.*` — scoped to `~/.general-app/`. Paths are relative; absolute paths and `..` traversal are rejected. Use this for app-managed state (notes, bookmarks, saved images).
+- `window.app.fs.*` — unscoped. Accepts absolute paths and `~/…` (expanded to the user's home). Use this when a feature legitimately needs files outside `~/.general-app/` (a user's Obsidian vault, Desktop, an external project).
+
+Both namespaces expose the same surface. Core features (settings, window state, UI manifest, update flow) run on the `data` primitives. There is no privileged internal path. A feature added by a user's agent has the same access as a feature shipped in the app. When adding persistence, use these APIs. Skip `localStorage` and embedded DBs.
 
 ```js
 // Text + JSON
@@ -41,22 +44,51 @@ await window.app.data.readBytes(name)   // { ok, data: Uint8Array }
 await window.app.data.writeBlob(name, blob)
 await window.app.data.readBlob(name, type?)  // { ok, data: Blob }
 
+// Markdown with YAML frontmatter
+await window.app.data.writeMarkdown(name, { frontmatter, body })
+await window.app.data.readMarkdown(name) // { ok, data: { frontmatter, body } }
+
 // Misc
 await window.app.data.exists(name)      // { ok, data: boolean }
-await window.app.data.list(prefix?)     // { ok, data: [{ name, isDirectory }] }
+await window.app.data.list(subpath?)    // { ok, data: [{ name, isDirectory }] }
 await window.app.data.delete(name)
+
+// Same surface, unscoped: any absolute or ~/-prefixed path
+await window.app.fs.readMarkdown('~/Documents/notes/today.md')
+await window.app.fs.list('~/Desktop')
 ```
 
-- `name` is relative to `~/.general-app/`. Absolute paths and `..` traversal are rejected.
+- For `data.*`, `name` is relative to `~/.general-app/`. Absolute paths and `..` traversal are rejected.
+- For `fs.*`, `name` must be absolute (`/…`) or home-relative (`~/…`). Relative paths are rejected.
 - Calls return `{ ok: true, data? }` or `{ ok: false, error }`. No throws.
 - Writes `mkdir -p` the parent automatically.
 - `delete` is recursive.
+- `list()` defaults to the data-dir root for `data`, and to `~` for `fs`.
 
-Adding a feature:
+### Markdown with frontmatter
 
-1. Pick a sensible path under `~/.general-app/`. `notes.json`. `bookmarks/items.json`. `clips/<id>.png`.
-2. Write through the API. Main-process code calls `dataReadText` / `dataWrite` / etc. UI code calls `window.app.data.*`. Same primitives underneath.
-3. If the main process needs to react immediately (apply a setting, refresh a list), add a dedicated IPC handler alongside the data API. The data API is the substrate. Handlers like `save-settings` are convenience wrappers that also trigger side effects.
+`readMarkdown` parses a `---`-fenced YAML block at the top of the file and returns `{ frontmatter, body }`. Files without a fence read as `{ frontmatter: {}, body: <entire file> }`.
+
+`writeMarkdown({ frontmatter, body })` emits the fence only when `frontmatter` has keys — so writing `{ frontmatter: {}, body: '…' }` produces a clean markdown file with no header.
+
+```js
+await window.app.fs.writeMarkdown('~/Notes/2026-04-19.md', {
+  frontmatter: { title: 'Today', tags: ['log'] },
+  body: '# Today\n\nNotes…\n',
+})
+
+const { data: doc } = await window.app.fs.readMarkdown('~/Notes/2026-04-19.md')
+doc.frontmatter.tags.push('done')
+await window.app.fs.writeMarkdown('~/Notes/2026-04-19.md', doc)
+```
+
+Parsing and serialization live in preload.js and use the bundled `js-yaml`. Round-tripping rewrites the YAML block — comments inside frontmatter are not preserved.
+
+### Adding a feature
+
+1. Decide scope. App-managed state → `data.*` under `~/.general-app/` (e.g. `notes.json`, `bookmarks/items.json`, `clips/<id>.png`). Touching a user's existing files → `fs.*` with an explicit path from settings or a picker.
+2. Write through the API. Main-process code calls `dataReadText` / `dataWrite` / `fsReadText` / etc. UI code calls `window.app.data.*` / `window.app.fs.*`. Same primitives underneath.
+3. If the main process needs to react immediately (apply a setting, refresh a list), add a dedicated IPC handler alongside. The data/fs APIs are the substrate. Handlers like `save-settings` are convenience wrappers that also trigger side effects.
 
 ## Conventions
 

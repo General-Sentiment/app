@@ -86,9 +86,12 @@ lib/           Vendored Preact + htm + hooks
 
 ## Persisting feature state
 
-The UI has a scoped CRUD API at \`window.app.data.*\` for reading and writing files inside \`~/.general-app/\`. Use it instead of \`localStorage\` or a database.
+Two CRUD namespaces on \`window.app.*\`. Use them instead of \`localStorage\` or a database.
 
-All calls return \`{ ok, data?, error? }\`. Paths are relative to the data dir. Absolute paths and \`..\` traversal are rejected.
+- \`window.app.data.*\` — scoped to \`~/.general-app/\`. Paths are relative; \`..\` and absolute paths are rejected.
+- \`window.app.fs.*\` — unscoped. Accepts absolute paths and \`~/…\`. Use when a feature needs files outside \`~/.general-app/\` (an Obsidian vault, Desktop, external project).
+
+Both expose the same surface. All calls return \`{ ok, data?, error? }\`. Writes \`mkdir -p\` the parent. \`delete\` is recursive.
 
 \`\`\`js
 // Text + JSON
@@ -101,11 +104,25 @@ await window.app.data.writeBlob('images/foo.png', await res.blob())
 const { data: blob } = await window.app.data.readBlob('images/foo.png', 'image/png')
 img.src = URL.createObjectURL(blob)
 
+// Markdown with YAML frontmatter
+await window.app.data.writeMarkdown('notes/today.md', {
+  frontmatter: { title: 'Today', tags: ['log'] },
+  body: '# Today\\n\\nNotes…\\n',
+})
+const { data: doc } = await window.app.data.readMarkdown('notes/today.md')
+// doc = { frontmatter: { title, tags }, body }
+
+// Same API, outside the data dir
+await window.app.fs.readMarkdown('~/Documents/vault/ideas.md')
+await window.app.fs.list('~/Desktop')
+
 // Misc
 await window.app.data.list()                   // [{ name, isDirectory }, …]
 await window.app.data.exists('notes.json')     // { ok, data: boolean }
 await window.app.data.delete('notes.json')
 \`\`\`
+
+Frontmatter round-trips through \`js-yaml\`: an empty \`frontmatter: {}\` writes no fence; rewriting drops comments inside the YAML block.
 
 The app's own features (settings, window state, UI manifest, update flow) use the same primitives. There is no privileged internal path.
 
@@ -169,6 +186,55 @@ ipcMain.handle('data-write-bytes', (_e, n, b) => wrap(() => { dataWrite(n, b); r
 ipcMain.handle('data-delete',      (_e, n)    => wrap(() => { dataDelete(n); return null }))
 ipcMain.handle('data-exists',      (_e, n)    => wrap(() => dataExists(n)))
 ipcMain.handle('data-list',        (_e, p)    => wrap(() => dataList(p)))
+
+// ── Filesystem API (window.app.fs.*) ───────────────────────────────────────
+// Unscoped read/write for paths anywhere on disk. Accepts absolute paths and
+// `~/…` (expanded to the user's home). Use this when a feature needs to touch
+// files outside `~/.general-app/` (e.g. a user's notes vault, Desktop, iCloud
+// Drive). For app-managed state, prefer the scoped `data` API above.
+function resolveFsPath(name) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('path must be a non-empty string')
+  }
+  let p = name
+  if (p === '~') p = HOME
+  else if (p.startsWith('~/')) p = path.join(HOME, p.slice(2))
+  if (!path.isAbsolute(p)) {
+    throw new Error('fs paths must be absolute (start with / or ~/)')
+  }
+  return path.normalize(p)
+}
+
+function fsReadText(name)   { return fs.readFileSync(resolveFsPath(name), 'utf8') }
+function fsReadBytes(name)  {
+  const buf = fs.readFileSync(resolveFsPath(name))
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+}
+function fsWrite(name, content) {
+  const abs = resolveFsPath(name)
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  if (typeof content === 'string') { fs.writeFileSync(abs, content, 'utf8'); return }
+  let buf
+  if (content instanceof Uint8Array) buf = Buffer.from(content.buffer, content.byteOffset, content.byteLength)
+  else if (content instanceof ArrayBuffer) buf = Buffer.from(content)
+  else if (Buffer.isBuffer(content)) buf = content
+  else throw new Error('write() expects a string, Uint8Array, ArrayBuffer, or Buffer')
+  fs.writeFileSync(abs, buf)
+}
+function fsDelete(name) { fs.rmSync(resolveFsPath(name), { recursive: true, force: true }) }
+function fsExists(name) { return fs.existsSync(resolveFsPath(name)) }
+function fsList(name) {
+  return fs.readdirSync(resolveFsPath(name), { withFileTypes: true })
+    .map(e => ({ name: e.name, isDirectory: e.isDirectory() }))
+}
+
+ipcMain.handle('fs-read',        (_e, n)    => wrap(() => fsReadText(n)))
+ipcMain.handle('fs-read-bytes',  (_e, n)    => wrap(() => fsReadBytes(n)))
+ipcMain.handle('fs-write',       (_e, n, t) => wrap(() => { fsWrite(n, t); return null }))
+ipcMain.handle('fs-write-bytes', (_e, n, b) => wrap(() => { fsWrite(n, b); return null }))
+ipcMain.handle('fs-delete',      (_e, n)    => wrap(() => { fsDelete(n); return null }))
+ipcMain.handle('fs-exists',      (_e, n)    => wrap(() => fsExists(n)))
+ipcMain.handle('fs-list',        (_e, p)    => wrap(() => fsList(p)))
 
 // ── Bundle utilities (hash, walk, copy) ────────────────────────────────────
 function hashFile(filePath) {
