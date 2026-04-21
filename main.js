@@ -91,7 +91,7 @@ Two CRUD namespaces on \`window.app.*\`. Use them instead of \`localStorage\` or
 - \`window.app.data.*\` — scoped to \`~/.general-app/\`. Paths are relative; \`..\` and absolute paths are rejected.
 - \`window.app.fs.*\` — unscoped. Accepts absolute paths and \`~/…\`. Use when a feature needs files outside \`~/.general-app/\` (an Obsidian vault, Desktop, external project).
 
-Both expose the same surface. All calls return \`{ ok, data?, error? }\`. Writes \`mkdir -p\` the parent. \`delete\` is recursive.
+Both expose the same surface. All calls return \`{ ok, data?, error? }\`. Writes \`mkdir -p\` the parent. \`delete\` moves to the OS trash (recoverable, not erased) and is recursive.
 
 \`\`\`js
 // Text + JSON
@@ -168,22 +168,40 @@ function dataWrite(name, content) {
   fs.writeFileSync(abs, buf)
 }
 
-function dataDelete(name) { fs.rmSync(resolveDataPath(name), { recursive: true, force: true }) }
+// Public delete: moves to the OS trash (macOS Trash, Windows Recycle Bin,
+// XDG trash on Linux). Recoverable. Missing paths are a no-op.
+async function dataDelete(name) {
+  const abs = resolveDataPath(name)
+  if (fs.existsSync(abs)) await shell.trashItem(abs)
+}
+
+// Internal: hard-delete for scaffold files the user never created (e.g.
+// UPDATE.md, pending-update.yml). We don't want these cluttering the Trash.
+function hardDelete(absPath) { fs.rmSync(absPath, { recursive: true, force: true }) }
+
 function dataExists(name) { return fs.existsSync(resolveDataPath(name)) }
 function dataList(name) {
   return fs.readdirSync(resolveDataPath(name || '.'), { withFileTypes: true })
     .map(e => ({ name: e.name, isDirectory: e.isDirectory() }))
 }
 
+// Handle both sync and async return values so delete (which awaits
+// shell.trashItem) can share the same wrapper as the rest of the API.
 function wrap(fn) {
-  try { return { ok: true, data: fn() } } catch (err) { return { ok: false, error: err.message } }
+  try {
+    const result = fn()
+    if (result && typeof result.then === 'function') {
+      return result.then(data => ({ ok: true, data }), err => ({ ok: false, error: err.message }))
+    }
+    return { ok: true, data: result }
+  } catch (err) { return { ok: false, error: err.message } }
 }
 
 ipcMain.handle('data-read',        (_e, n)    => wrap(() => dataReadText(n)))
 ipcMain.handle('data-read-bytes',  (_e, n)    => wrap(() => dataReadBytes(n)))
 ipcMain.handle('data-write',       (_e, n, t) => wrap(() => { dataWrite(n, t); return null }))
 ipcMain.handle('data-write-bytes', (_e, n, b) => wrap(() => { dataWrite(n, b); return null }))
-ipcMain.handle('data-delete',      (_e, n)    => wrap(() => { dataDelete(n); return null }))
+ipcMain.handle('data-delete',      (_e, n)    => wrap(async () => { await dataDelete(n); return null }))
 ipcMain.handle('data-exists',      (_e, n)    => wrap(() => dataExists(n)))
 ipcMain.handle('data-list',        (_e, p)    => wrap(() => dataList(p)))
 
@@ -221,7 +239,10 @@ function fsWrite(name, content) {
   else throw new Error('write() expects a string, Uint8Array, ArrayBuffer, or Buffer')
   fs.writeFileSync(abs, buf)
 }
-function fsDelete(name) { fs.rmSync(resolveFsPath(name), { recursive: true, force: true }) }
+async function fsDelete(name) {
+  const abs = resolveFsPath(name)
+  if (fs.existsSync(abs)) await shell.trashItem(abs)
+}
 function fsExists(name) { return fs.existsSync(resolveFsPath(name)) }
 function fsList(name) {
   return fs.readdirSync(resolveFsPath(name), { withFileTypes: true })
@@ -232,7 +253,7 @@ ipcMain.handle('fs-read',        (_e, n)    => wrap(() => fsReadText(n)))
 ipcMain.handle('fs-read-bytes',  (_e, n)    => wrap(() => fsReadBytes(n)))
 ipcMain.handle('fs-write',       (_e, n, t) => wrap(() => { fsWrite(n, t); return null }))
 ipcMain.handle('fs-write-bytes', (_e, n, b) => wrap(() => { fsWrite(n, b); return null }))
-ipcMain.handle('fs-delete',      (_e, n)    => wrap(() => { fsDelete(n); return null }))
+ipcMain.handle('fs-delete',      (_e, n)    => wrap(async () => { await fsDelete(n); return null }))
 ipcMain.handle('fs-exists',      (_e, n)    => wrap(() => fsExists(n)))
 ipcMain.handle('fs-list',        (_e, p)    => wrap(() => fsList(p)))
 
@@ -537,8 +558,8 @@ ipcMain.handle('prepare-update', () => {
 ipcMain.handle('finalize-update', () => {
   try {
     writeInitialManifest()
-    if (dataExists('pending-update.yml')) dataDelete('pending-update.yml')
-    if (dataExists('UPDATE.md')) dataDelete('UPDATE.md')
+    if (dataExists('pending-update.yml')) hardDelete(resolveDataPath('pending-update.yml'))
+    if (dataExists('UPDATE.md')) hardDelete(resolveDataPath('UPDATE.md'))
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }
@@ -594,14 +615,15 @@ ipcMain.handle('open-path', async (_e, p) => {
   if (err) console.error('open-path failed:', err, 'path:', p)
 })
 
-ipcMain.handle('reset-ui', () => {
+ipcMain.handle('reset-ui', async () => {
   if (!app.isPackaged) return { success: false, error: 'Not available in dev mode' }
-  if (dataExists('ui')) dataDelete('ui')
+  // Trash the user's ui/ dir so their edits are recoverable from the Trash.
+  if (dataExists('ui')) await dataDelete('ui')
   copyDirRecursive(BUILTIN_UI, USER_UI_DIR)
   writeInitialManifest()
   writeIfMissing('ui/AGENTS.md', UI_AGENTS_MD)
-  if (dataExists('pending-update.yml')) dataDelete('pending-update.yml')
-  if (dataExists('UPDATE.md')) dataDelete('UPDATE.md')
+  if (dataExists('pending-update.yml')) hardDelete(resolveDataPath('pending-update.yml'))
+  if (dataExists('UPDATE.md')) hardDelete(resolveDataPath('UPDATE.md'))
   startWatchers()
   for (const state of windows.values()) {
     if (state.win) state.win.loadFile(path.join(getUIPath(), 'index.html'))

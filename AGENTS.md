@@ -62,7 +62,7 @@ await window.app.fs.list('~/Desktop')
 - For `fs.*`, `name` must be absolute (`/…`) or home-relative (`~/…`). Relative paths are rejected.
 - Calls return `{ ok: true, data? }` or `{ ok: false, error }`. No throws.
 - Writes `mkdir -p` the parent automatically.
-- `delete` is recursive.
+- `delete` moves the path to the OS trash (macOS Trash, Windows Recycle Bin, XDG trash on Linux) so it's recoverable, not erased. Recursive. Missing paths are a no-op.
 - `list()` defaults to the data-dir root for `data`, and to `~` for `fs`.
 
 ### Markdown with frontmatter

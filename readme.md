@@ -72,7 +72,7 @@ const { data: doc } = await window.app.fs.readMarkdown("~/Notes/2026-04-19.md");
 
 No privileged internal path. Settings, window state, UI manifest, update flow all run on the same primitives. An agent-built feature gets the same access core code has. The API is the plugin architecture. You build on the surface the app is built on.
 
-Every call returns `{ ok, data?, error? }`. `data.*` rejects absolute paths and `..`. `fs.*` rejects relative paths. Full surface on both: `read`, `write`, `readJSON`, `writeJSON`, `readBytes`, `writeBytes`, `readBlob`, `writeBlob`, `readMarkdown`, `writeMarkdown`, `delete`, `exists`, `list`.
+Every call returns `{ ok, data?, error? }`. `data.*` rejects absolute paths and `..`. `fs.*` rejects relative paths. `delete` moves the path to the OS trash (macOS Trash, Windows Recycle Bin, XDG trash on Linux) so it's recoverable. Full surface on both: `read`, `write`, `readJSON`, `writeJSON`, `readBytes`, `writeBytes`, `readBlob`, `writeBlob`, `readMarkdown`, `writeMarkdown`, `delete`, `exists`, `list`.
 
 ### Markdown with frontmatter
 
