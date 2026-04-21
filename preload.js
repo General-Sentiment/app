@@ -1,28 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron')
-const yaml = require('js-yaml')
-
-// YAML frontmatter: `---\n<yaml>\n---\n<body>`. Matches Jekyll / Hugo /
-// Obsidian conventions. An empty or absent frontmatter block writes no fence.
-const FM_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/
-
-function parseMarkdown(text) {
-  const m = FM_RE.exec(text)
-  if (!m) return { frontmatter: {}, body: text }
-  let frontmatter = {}
-  try { frontmatter = yaml.load(m[1]) || {} } catch { frontmatter = {} }
-  return { frontmatter, body: m[2] }
-}
-
-function stringifyMarkdown(doc) {
-  const { frontmatter, body } = doc || {}
-  const hasFm = frontmatter && typeof frontmatter === 'object' && Object.keys(frontmatter).length > 0
-  const fm = hasFm ? `---\n${yaml.dump(frontmatter).trimEnd()}\n---\n` : ''
-  return fm + (body ?? '')
-}
 
 // Build a CRUD surface bound to a given IPC channel prefix. `data` binds to
 // the scoped `~/.general-app/` handlers; `fs` binds to the unscoped handlers
-// that accept absolute or `~/` paths.
+// that accept absolute or `~/` paths. Markdown parsing runs in the main
+// process — preload is sandboxed and can't require `js-yaml`.
 function makeApi(prefix) {
   return {
     read:       (name)       => ipcRenderer.invoke(`${prefix}-read`, name),
@@ -49,16 +30,8 @@ function makeApi(prefix) {
       return ipcRenderer.invoke(`${prefix}-write-bytes`, name, buf)
     },
 
-    readMarkdown: async (name) => {
-      const r = await ipcRenderer.invoke(`${prefix}-read`, name)
-      if (!r.ok) return r
-      try { return { ok: true, data: parseMarkdown(r.data) } }
-      catch (err) { return { ok: false, error: err.message } }
-    },
-    writeMarkdown: (name, doc) => {
-      try { return ipcRenderer.invoke(`${prefix}-write`, name, stringifyMarkdown(doc)) }
-      catch (err) { return Promise.resolve({ ok: false, error: err.message }) }
-    },
+    readMarkdown:  (name)      => ipcRenderer.invoke(`${prefix}-read-markdown`, name),
+    writeMarkdown: (name, doc) => ipcRenderer.invoke(`${prefix}-write-markdown`, name, doc),
 
     delete: (name)    => ipcRenderer.invoke(`${prefix}-delete`, name),
     exists: (name)    => ipcRenderer.invoke(`${prefix}-exists`, name),

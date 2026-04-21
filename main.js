@@ -185,6 +185,27 @@ function dataList(name) {
     .map(e => ({ name: e.name, isDirectory: e.isDirectory() }))
 }
 
+// YAML frontmatter: `---\n<yaml>\n---\n<body>`. Matches Jekyll / Hugo /
+// Obsidian conventions. An empty or absent frontmatter block writes no fence.
+// Parsing lives in main because preload runs sandboxed and can't require
+// `js-yaml`.
+const FM_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/
+
+function parseMarkdown(text) {
+  const m = FM_RE.exec(text)
+  if (!m) return { frontmatter: {}, body: text }
+  let frontmatter = {}
+  try { frontmatter = yaml.load(m[1]) || {} } catch { frontmatter = {} }
+  return { frontmatter, body: m[2] }
+}
+
+function stringifyMarkdown(doc) {
+  const { frontmatter, body } = doc || {}
+  const hasFm = frontmatter && typeof frontmatter === 'object' && Object.keys(frontmatter).length > 0
+  const fm = hasFm ? `---\n${yaml.dump(frontmatter).trimEnd()}\n---\n` : ''
+  return fm + (body ?? '')
+}
+
 // Handle both sync and async return values so delete (which awaits
 // shell.trashItem) can share the same wrapper as the rest of the API.
 function wrap(fn) {
@@ -197,13 +218,15 @@ function wrap(fn) {
   } catch (err) { return { ok: false, error: err.message } }
 }
 
-ipcMain.handle('data-read',        (_e, n)    => wrap(() => dataReadText(n)))
-ipcMain.handle('data-read-bytes',  (_e, n)    => wrap(() => dataReadBytes(n)))
-ipcMain.handle('data-write',       (_e, n, t) => wrap(() => { dataWrite(n, t); return null }))
-ipcMain.handle('data-write-bytes', (_e, n, b) => wrap(() => { dataWrite(n, b); return null }))
-ipcMain.handle('data-delete',      (_e, n)    => wrap(async () => { await dataDelete(n); return null }))
-ipcMain.handle('data-exists',      (_e, n)    => wrap(() => dataExists(n)))
-ipcMain.handle('data-list',        (_e, p)    => wrap(() => dataList(p)))
+ipcMain.handle('data-read',           (_e, n)    => wrap(() => dataReadText(n)))
+ipcMain.handle('data-read-bytes',     (_e, n)    => wrap(() => dataReadBytes(n)))
+ipcMain.handle('data-write',          (_e, n, t) => wrap(() => { dataWrite(n, t); return null }))
+ipcMain.handle('data-write-bytes',    (_e, n, b) => wrap(() => { dataWrite(n, b); return null }))
+ipcMain.handle('data-read-markdown',  (_e, n)    => wrap(() => parseMarkdown(dataReadText(n))))
+ipcMain.handle('data-write-markdown', (_e, n, d) => wrap(() => { dataWrite(n, stringifyMarkdown(d)); return null }))
+ipcMain.handle('data-delete',         (_e, n)    => wrap(async () => { await dataDelete(n); return null }))
+ipcMain.handle('data-exists',         (_e, n)    => wrap(() => dataExists(n)))
+ipcMain.handle('data-list',           (_e, p)    => wrap(() => dataList(p)))
 
 // ── Filesystem API (window.app.fs.*) ───────────────────────────────────────
 // Unscoped read/write for paths anywhere on disk. Accepts absolute paths and
@@ -249,13 +272,15 @@ function fsList(name) {
     .map(e => ({ name: e.name, isDirectory: e.isDirectory() }))
 }
 
-ipcMain.handle('fs-read',        (_e, n)    => wrap(() => fsReadText(n)))
-ipcMain.handle('fs-read-bytes',  (_e, n)    => wrap(() => fsReadBytes(n)))
-ipcMain.handle('fs-write',       (_e, n, t) => wrap(() => { fsWrite(n, t); return null }))
-ipcMain.handle('fs-write-bytes', (_e, n, b) => wrap(() => { fsWrite(n, b); return null }))
-ipcMain.handle('fs-delete',      (_e, n)    => wrap(async () => { await fsDelete(n); return null }))
-ipcMain.handle('fs-exists',      (_e, n)    => wrap(() => fsExists(n)))
-ipcMain.handle('fs-list',        (_e, p)    => wrap(() => fsList(p)))
+ipcMain.handle('fs-read',           (_e, n)    => wrap(() => fsReadText(n)))
+ipcMain.handle('fs-read-bytes',     (_e, n)    => wrap(() => fsReadBytes(n)))
+ipcMain.handle('fs-write',          (_e, n, t) => wrap(() => { fsWrite(n, t); return null }))
+ipcMain.handle('fs-write-bytes',    (_e, n, b) => wrap(() => { fsWrite(n, b); return null }))
+ipcMain.handle('fs-read-markdown',  (_e, n)    => wrap(() => parseMarkdown(fsReadText(n))))
+ipcMain.handle('fs-write-markdown', (_e, n, d) => wrap(() => { fsWrite(n, stringifyMarkdown(d)); return null }))
+ipcMain.handle('fs-delete',         (_e, n)    => wrap(async () => { await fsDelete(n); return null }))
+ipcMain.handle('fs-exists',         (_e, n)    => wrap(() => fsExists(n)))
+ipcMain.handle('fs-list',           (_e, p)    => wrap(() => fsList(p)))
 
 // ── Bundle utilities (hash, walk, copy) ────────────────────────────────────
 function hashFile(filePath) {
